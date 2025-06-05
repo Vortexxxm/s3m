@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Loader2, Trophy, Target, Users, Gamepad2, Edit, Phone, User, Mail, Upload, Save, X } from "lucide-react";
+import { Loader2, Trophy, Target, Users, Gamepad2, Edit, Phone, User, Mail, Upload, Save, X, AlertCircle } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 const Profile = () => {
@@ -21,6 +20,8 @@ const Profile = () => {
   const queryClient = useQueryClient();
   const [isEditing, setIsEditing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  
+  // Local state for form data - initialized with empty values
   const [formData, setFormData] = useState({
     full_name: "",
     username: "",
@@ -28,6 +29,9 @@ const Profile = () => {
     bio: "",
     phone_number: ""
   });
+  
+  // Local state for profile data to prevent disappearing
+  const [localProfileData, setLocalProfileData] = useState(null);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -42,6 +46,7 @@ const Profile = () => {
       
       console.log('Fetching profile data for user:', user.id);
       
+      // Get profile data
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('*')
@@ -51,6 +56,7 @@ const Profile = () => {
       if (profileError) {
         console.error('Profile error:', profileError);
         if (profileError.code === 'PGRST116') {
+          // Create new profile if doesn't exist
           const { data: newProfile, error: createError } = await supabase
             .from('profiles')
             .insert({
@@ -65,11 +71,26 @@ const Profile = () => {
             .single();
           
           if (createError) throw createError;
+          
+          // Also create leaderboard entry
+          await supabase
+            .from('leaderboard_scores')
+            .insert({
+              user_id: user.id,
+              points: 0,
+              wins: 0,
+              losses: 0,
+              kills: 0,
+              deaths: 0,
+              games_played: 0
+            });
+            
           return { profile: newProfile, stats: null };
         }
         throw profileError;
       }
       
+      // Get stats data
       const { data: statsData, error: statsError } = await supabase
         .from('leaderboard_scores')
         .select('*')
@@ -78,25 +99,53 @@ const Profile = () => {
         
       if (statsError) {
         console.error('Stats error:', statsError);
-        throw statsError;
+        // Don't throw error for stats, just log it
       }
       
-      console.log('Profile data:', profileData);
-      console.log('Stats data:', statsData);
-      
-      return {
+      const result = {
         profile: profileData,
-        stats: statsData
+        stats: statsData || {
+          points: 0,
+          wins: 0,
+          losses: 0,
+          kills: 0,
+          deaths: 0,
+          games_played: 0,
+          rank_position: null
+        }
       };
+      
+      console.log('Profile data loaded:', result);
+      return result;
     },
     enabled: !!user?.id,
-    staleTime: 1000 * 60 * 10, // Keep data fresh for 10 minutes
-    gcTime: 1000 * 60 * 30, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
+    staleTime: 1000 * 60 * 15, // Keep data fresh for 15 minutes
+    gcTime: 1000 * 60 * 60, // Keep in cache for 1 hour
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
     retry: 3,
     retryDelay: 1000,
   });
   
+  // Update local state when profile data changes
+  useEffect(() => {
+    if (profileData) {
+      console.log('Updating local profile data:', profileData);
+      setLocalProfileData(profileData);
+      
+      if (profileData.profile) {
+        setFormData({
+          full_name: profileData.profile.full_name || "",
+          username: profileData.profile.username || "",
+          game_id: profileData.profile.game_id || "",
+          bio: profileData.profile.bio || "",
+          phone_number: profileData.profile.phone_number || ""
+        });
+      }
+    }
+  }, [profileData]);
+
+  // Real-time subscription for profile updates
   useEffect(() => {
     if (!user?.id) return;
 
@@ -135,18 +184,6 @@ const Profile = () => {
       supabase.removeChannel(channel);
     };
   }, [user?.id, queryClient]);
-  
-  useEffect(() => {
-    if (profileData?.profile) {
-      setFormData({
-        full_name: profileData.profile.full_name || "",
-        username: profileData.profile.username || "",
-        game_id: profileData.profile.game_id || "",
-        bio: profileData.profile.bio || "",
-        phone_number: profileData.profile.phone_number || ""
-      });
-    }
-  }, [profileData]);
 
   const updateProfileMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
@@ -198,21 +235,49 @@ const Profile = () => {
         .from('images')
         .getPublicUrl(filePath);
 
+      // Add timestamp for immediate cache busting
+      const newAvatarUrl = `${publicUrl}?t=${Date.now()}`;
+
       const { error: updateError } = await supabase
         .from('profiles')
         .update({ 
-          avatar_url: publicUrl,
+          avatar_url: newAvatarUrl,
           updated_at: new Date().toISOString()
         })
         .eq('id', user.id);
 
       if (updateError) throw updateError;
 
-      return publicUrl;
+      // Immediately update local state to show the new image
+      setLocalProfileData(prev => prev ? {
+        ...prev,
+        profile: {
+          ...prev.profile,
+          avatar_url: newAvatarUrl
+        }
+      } : null);
+
+      return newAvatarUrl;
     },
-    onSuccess: () => {
+    onSuccess: (newAvatarUrl) => {
+      // Force refresh all queries with new data
       queryClient.invalidateQueries({ queryKey: ['profile'] });
       queryClient.refetchQueries({ queryKey: ['profile', user?.id] });
+      
+      // Also update the navbar profile query specifically
+      queryClient.setQueryData(['profile', user?.id], (oldData: any) => {
+        if (oldData?.profile) {
+          return {
+            ...oldData,
+            profile: {
+              ...oldData.profile,
+              avatar_url: newAvatarUrl
+            }
+          };
+        }
+        return oldData;
+      });
+
       toast({
         title: "تم تحديث الصورة",
         description: "تم رفع صورتك الشخصية بنجاح",
@@ -249,6 +314,7 @@ const Profile = () => {
     updateProfileMutation.mutate(formData);
   };
 
+  // Helper functions
   const getKDRatio = (kills: number, deaths: number) => {
     if (deaths === 0) return kills > 0 ? kills.toFixed(1) : "0.0";
     return (kills / deaths).toFixed(1);
@@ -259,6 +325,24 @@ const Profile = () => {
     return `${((wins / gamesPlayed) * 100).toFixed(1)}%`;
   };
 
+  const getAvatarUrl = () => {
+    const currentProfile = localProfileData?.profile || profileData?.profile;
+    const avatarUrl = currentProfile?.avatar_url;
+    if (avatarUrl && avatarUrl.trim() !== '') {
+      // Always add a fresh timestamp to prevent caching
+      const separator = avatarUrl.includes('?') ? '&' : '?';
+      return `${avatarUrl}${separator}t=${Date.now()}&cache_bust=${Math.random()}`;
+    }
+    return null;
+  };
+
+  // Check if profile is incomplete
+  const isProfileIncomplete = (profile: any) => {
+    if (!profile) return true;
+    return !profile.full_name || !profile.game_id || !profile.bio || !profile.phone_number;
+  };
+
+  // Loading state
   if (loading || profileLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -267,7 +351,8 @@ const Profile = () => {
     );
   }
 
-  if (profileError) {
+  // Error state
+  if (profileError && !localProfileData) {
     console.error('Profile error:', profileError);
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -284,6 +369,7 @@ const Profile = () => {
     );
   }
 
+  // No user state
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -300,7 +386,9 @@ const Profile = () => {
     );
   }
 
-  const profile = profileData?.profile || {
+  // Use local data if available, fallback to fresh data
+  const currentData = localProfileData || profileData;
+  const profile = currentData?.profile || {
     username: user?.email?.split('@')[0] || 'مستخدم',
     full_name: '',
     game_id: '',
@@ -309,7 +397,7 @@ const Profile = () => {
     avatar_url: null
   };
 
-  const stats = profileData?.stats || {
+  const stats = currentData?.stats || {
     points: 0,
     wins: 0,
     losses: 0,
@@ -319,19 +407,35 @@ const Profile = () => {
     rank_position: null
   };
 
-  const getAvatarUrl = () => {
-    const avatarUrl = profile.avatar_url;
-    if (avatarUrl && avatarUrl.trim() !== '') {
-      const cleanUrl = avatarUrl.split('?')[0];
-      const timestamp = Date.now();
-      return `${cleanUrl}?t=${timestamp}&cache_bust=${Math.random()}`;
-    }
-    return null;
-  };
+  const profileIncomplete = isProfileIncomplete(profile);
 
   return (
     <div className="min-h-screen w-full">
       <div className="w-full max-w-none mx-auto px-4 py-8">
+        {/* Welcome Message for New Users */}
+        {profileIncomplete && !isEditing && (
+          <Card className="gaming-card mb-8 border-s3m-red/30">
+            <CardContent className="p-6">
+              <div className="flex items-start space-x-4 space-x-reverse">
+                <AlertCircle className="h-6 w-6 text-s3m-red mt-1 flex-shrink-0" />
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-s3m-red mb-2">مرحباً بك في S3M E-Sports!</h3>
+                  <p className="text-white/80 mb-4">
+                    يبدو أن هذه زيارتك الأولى. لتحصل على أفضل تجربة معنا، يرجى إكمال معلوماتك الشخصية.
+                  </p>
+                  <Button 
+                    onClick={() => setIsEditing(true)}
+                    className="bg-gradient-to-r from-s3m-red to-red-600 hover:from-red-600 hover:to-s3m-red"
+                  >
+                    <Edit className="h-4 w-4 mr-2" />
+                    إكمال الملف الشخصي
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Header Section */}
         <div className="relative w-full mb-8">
           <div 
@@ -347,7 +451,10 @@ const Profile = () => {
                   <Avatar className="w-24 h-24 border-4 border-white shadow-xl">
                     <AvatarImage 
                       src={getAvatarUrl() || ""} 
-                      key={getAvatarUrl()}
+                      key={getAvatarUrl() || 'no-avatar'}
+                      onError={(e) => {
+                        console.error('Avatar failed to load:', e);
+                      }}
                     />
                     <AvatarFallback className="bg-s3m-red text-white text-2xl">
                       {(profile.username || profile.full_name || 'U').slice(0, 2).toUpperCase()}
@@ -371,10 +478,10 @@ const Profile = () => {
                 </div>
                 <div className="text-white">
                   <h1 className="text-3xl font-bold mb-1">
-                    {profile.username || 'مستخدم'}
+                    {profile.username || 'مستخدم جديد'}
                   </h1>
                   <p className="text-lg opacity-90">
-                    {profile.full_name || 'مرحباً بك'}
+                    {profile.full_name || 'مرحباً بك في فريق S3M'}
                   </p>
                   <Badge className="bg-gradient-to-r from-s3m-red to-red-600 mt-2">
                     {stats.points?.toLocaleString() || 0} نقطة
@@ -499,7 +606,12 @@ const Profile = () => {
           <div className="space-y-6">
             <Card className="gaming-card">
               <CardHeader>
-                <CardTitle className="text-s3m-red">المعلومات الشخصية</CardTitle>
+                <CardTitle className="text-s3m-red flex items-center">
+                  المعلومات الشخصية
+                  {profileIncomplete && (
+                    <AlertCircle className="h-4 w-4 text-yellow-500 mr-2" />
+                  )}
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 {isEditing ? (
@@ -556,7 +668,11 @@ const Profile = () => {
                       <User className="h-5 w-5 text-s3m-red flex-shrink-0" />
                       <div className="min-w-0 flex-1">
                         <p className="text-white/60 text-sm">اسم المستخدم</p>
-                        <p className="text-white truncate">{profile.username || 'غير محدد'}</p>
+                        <p className="text-white truncate">
+                          {profile.username || (
+                            <span className="text-white/40 italic">لم يتم تحديده بعد</span>
+                          )}
+                        </p>
                       </div>
                     </div>
                     
@@ -566,7 +682,11 @@ const Profile = () => {
                       <User className="h-5 w-5 text-s3m-red flex-shrink-0" />
                       <div className="min-w-0 flex-1">
                         <p className="text-white/60 text-sm">الاسم الكامل</p>
-                        <p className="text-white truncate">{profile.full_name || 'غير محدد'}</p>
+                        <p className="text-white truncate">
+                          {profile.full_name || (
+                            <span className="text-white/40 italic">لم يتم تحديده بعد</span>
+                          )}
+                        </p>
                       </div>
                     </div>
                     
@@ -576,7 +696,11 @@ const Profile = () => {
                       <Gamepad2 className="h-5 w-5 text-s3m-red flex-shrink-0" />
                       <div className="min-w-0 flex-1">
                         <p className="text-white/60 text-sm">معرف اللعبة</p>
-                        <p className="text-white truncate">{profile.game_id || 'غير محدد'}</p>
+                        <p className="text-white truncate">
+                          {profile.game_id || (
+                            <span className="text-white/40 italic">لم يتم تحديده بعد</span>
+                          )}
+                        </p>
                       </div>
                     </div>
                     
@@ -586,7 +710,11 @@ const Profile = () => {
                       <Phone className="h-5 w-5 text-s3m-red flex-shrink-0" />
                       <div className="min-w-0 flex-1">
                         <p className="text-white/60 text-sm">رقم الهاتف</p>
-                        <p className="text-white truncate">{profile.phone_number || 'غير محدد'}</p>
+                        <p className="text-white truncate">
+                          {profile.phone_number || (
+                            <span className="text-white/40 italic">لم يتم تحديده بعد</span>
+                          )}
+                        </p>
                       </div>
                     </div>
                     
@@ -600,12 +728,16 @@ const Profile = () => {
                       </div>
                     </div>
                     
-                    {profile.bio && (
+                    {(profile.bio || isEditing) && (
                       <>
                         <Separator className="bg-white/10" />
                         <div>
                           <p className="text-white/60 text-sm mb-2">النبذة التعريفية</p>
-                          <p className="text-white break-words">{profile.bio}</p>
+                          <p className="text-white break-words">
+                            {profile.bio || (
+                              <span className="text-white/40 italic">لم يتم إضافة نبذة تعريفية بعد</span>
+                            )}
+                          </p>
                         </div>
                       </>
                     )}

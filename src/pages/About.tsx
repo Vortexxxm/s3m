@@ -5,10 +5,10 @@ import { Trophy, Target, Users, Zap, Award, Star } from "lucide-react";
 
 const About = () => {
   const achievements = [
-    { title: "بطل الدوري المحلي 2023", date: "ديسمبر 2023" },
-    { title: "المركز الثاني في البطولة الآسيوية", date: "نوفمبر 2023" },
-    { title: "أفضل فريق في المنطقة", date: "أكتوبر 2023" },
-    { title: "بطولة الخليج للألعاب الإلكترونية", date: "سبتمبر 2023" },
+    { title: "بطل الدوري المحلي 2023", date: "ديسمبر 2025" },
+    { title: "المركز الثاني في البطولة الآسيوية", date: "نوفمبر 2025" },
+    { title: "أفضل فريق في المنطقة", date: "أكتوبر 2025" },
+    { title: "بطولة الخليج للألعاب الإلكترونية", date: "سبتمبر 2025" },
   ];
 
   const teamValues = [
@@ -69,10 +69,9 @@ const About = () => {
                 </div>
                 <div className="space-y-4">
                   {[
-                    { year: "2021", event: "تأسيس الفريق" },
-                    { year: "2022", event: "أول بطولة محلية" },
-                    { year: "2023", event: "وصول للبطولات الدولية" },
-                    { year: "2024", event: "توسع الفريق" },
+                    { year: "2025", event: "تأسيس الفريق" },
+                    { year: "2025", event: "أول بطولة محلية" },
+                    { year: "2025", event: "توسع الفريق" },
                   ].map((milestone, index) => (
                     <div key={index} className="flex items-center space-x-4 bg-black/20 p-4 rounded-lg">
                       <Badge className="gaming-gradient text-white px-3 py-1">
